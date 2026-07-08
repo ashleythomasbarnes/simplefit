@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simplefit"
+version = "0.1.0"
+description = "Lightweight Gaussian fitting helpers for spectra and spectral cubes."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "astropy",
+    "joblib",
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "spectral-cube",
+]
+
+[project.optional-dependencies]
+progress = ["tqdm"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
