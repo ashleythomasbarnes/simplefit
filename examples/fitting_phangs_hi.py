@@ -9,8 +9,8 @@ REPO_SRC = Path(__file__).resolve().parents[1] / "src"
 if REPO_SRC.exists():
     sys.path.insert(0, str(REPO_SRC))
 
-import matplotlib.pyplot as plt
 import numpy as np
+import plotly.express as px
 from astropy import units as u
 from astropy.io import fits
 from spectral_cube import SpectralCube
@@ -24,7 +24,7 @@ OUTPUT_DIR = Path("/lustre/opsw/work/abarnes/phangs/HI_WORK/fitting/")
 HI_MARKER = "_meerkat_hi21cm"
 MASK_SUFFIX = "_broad_mom0"
 N_JOBS = 15
-SSA_SIZE = 0
+SSA_SIZE = None
 
 
 def display_path(path: Path) -> str:
@@ -96,9 +96,7 @@ def load_cube_and_mask(cube_file: Path, mask_file: Path) -> tuple[SpectralCube, 
 
 
 def make_component_plot(cube_fit, output_figure: Path) -> None:
-    cube_fit.component_table["log(amplitude)"] = np.log10(
-        cube_fit.component_table["amplitude"]
-    )
+    cube_fit.component_table["log(amplitude)"] = np.log10(cube_fit.component_table["amplitude"])
     plot_components = cube_fit.component_table
     plot_components = plot_components[
         plot_components["success"]
@@ -109,35 +107,42 @@ def make_component_plot(cube_fit, output_figure: Path) -> None:
     ]
     plot_df = plot_components.to_pandas()
 
-    fig = plt.figure(figsize=(9, 7))
-    ax = fig.add_subplot(projection="3d")
-    points = ax.scatter(
-        plot_df["x"],
-        plot_df["y"],
-        plot_df["center"],
-        c=plot_df["log(amplitude)"],
-        s=np.clip(plot_df["fwhm"], 1.0, 100.0),
-        cmap="magma",
-        vmin=0,
-        vmax=2,
-        alpha=0.2,
-        linewidths=0,
+    fig = px.scatter_3d(
+        plot_df,
+        x="x",
+        y="y",
+        z="center",
+        color="log(amplitude)",
+        size="fwhm",
+        color_continuous_scale="magma",
+        range_color=[0, 2],
+        size_max=12,
+        title="Fitted Gaussian Components in Position-Position-Velocity Space",
     )
 
-    ax.set_title("Fitted Gaussian Components in Position-Position-Velocity Space")
-    ax.set_xlabel("x pixel")
-    ax.set_ylabel("y pixel")
-    ax.set_zlabel("center velocity")
-    ax.invert_yaxis()
-    fig.colorbar(points, ax=ax, label="log(amplitude)", pad=0.12)
-    fig.tight_layout()
-    fig.savefig(output_figure, dpi=200)
-    plt.close(fig)
+    fig.update_traces(
+        marker={
+            "opacity": 0.2,
+            "line": {"width": 0},
+        }
+    )
+
+    fig.update_layout(
+        scene={
+            "xaxis_title": "x pixel",
+            "yaxis_title": "y pixel",
+            "zaxis_title": "center velocity",
+            "yaxis": {"autorange": "reversed"},
+        },
+        margin={"l": 0, "r": 0, "b": 0, "t": 45},
+    )
+
+    fig.write_html(output_figure, auto_open=False)
 
 
 def fit_one_galaxy(galaxy: str, cube_file: Path, mask_file: Path) -> None:
     output_table = OUTPUT_DIR / f"{galaxy}_fits.csv"
-    output_figure = OUTPUT_DIR / f"{galaxy}_fits.png"
+    output_figure = OUTPUT_DIR / f"{galaxy}_fits.html"
 
     print(f"Fitting {galaxy}:")
     print(f"  cube: {display_path(cube_file)}")
