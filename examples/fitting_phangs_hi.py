@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from os.path import commonprefix
 from pathlib import Path
+import sys
+
+
+REPO_SRC = Path(__file__).resolve().parents[1] / "src"
+if REPO_SRC.exists():
+    sys.path.insert(0, str(REPO_SRC))
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -26,6 +32,8 @@ def display_path(path: Path) -> str:
 
     path = path.resolve()
     for root in (Path.cwd().resolve(), INPUT_DIR.resolve(), OUTPUT_DIR.resolve()):
+        if path == root:
+            continue
         try:
             return str(path.relative_to(root))
         except ValueError:

@@ -253,16 +253,19 @@ def _fit_positions_independent(
             for y, x in positions
         )
     else:
-        result_iter = Parallel(n_jobs=n_jobs, prefer="threads", return_as="generator")(
-            worker(
-                y,
-                x,
-                data[:, y, x],
-                spectral_axis,
-                max_components=max_components,
-                fit_baseline=fit_baseline,
+        result_iter = _parallel_results(
+            n_jobs,
+            (
+                worker(
+                    y,
+                    x,
+                    data[:, y, x],
+                    spectral_axis,
+                    max_components=max_components,
+                    fit_baseline=fit_baseline,
+                )
+                for y, x in positions
             )
-            for y, x in positions
         )
     return list(_progress_iter(result_iter, total=len(positions), enabled=progress, desc="Fitting spectra"))
 
@@ -309,16 +312,19 @@ def _fit_positions_from_ssas(
             for ssa_result, y, x in tasks
         )
     else:
-        result_iter = Parallel(n_jobs=n_jobs, prefer="threads", return_as="generator")(
-            worker(
-                ssa_result,
-                y,
-                x,
-                data[:, y, x],
-                spectral_axis,
-                fit_baseline=fit_baseline,
+        result_iter = _parallel_results(
+            n_jobs,
+            (
+                worker(
+                    ssa_result,
+                    y,
+                    x,
+                    data[:, y, x],
+                    spectral_axis,
+                    fit_baseline=fit_baseline,
+                )
+                for ssa_result, y, x in tasks
             )
-            for ssa_result, y, x in tasks
         )
     fitted = list(_progress_iter(result_iter, total=len(tasks), enabled=progress, desc="Fitting SSA pixels"))
     return fitted + skipped
@@ -402,15 +408,18 @@ def _fit_ssa_spectra(
             for ssa_def in ssa_defs
         )
     else:
-        result_iter = Parallel(n_jobs=n_jobs, prefer="threads", return_as="generator")(
-            worker(
-                data,
-                spectral_axis,
-                ssa_def,
-                max_components=max_components,
-                fit_baseline=fit_baseline,
+        result_iter = _parallel_results(
+            n_jobs,
+            (
+                worker(
+                    data,
+                    spectral_axis,
+                    ssa_def,
+                    max_components=max_components,
+                    fit_baseline=fit_baseline,
+                )
+                for ssa_def in ssa_defs
             )
-            for ssa_def in ssa_defs
         )
     return list(_progress_iter(result_iter, total=len(ssa_defs), enabled=progress, desc="Fitting SSAs"))
 
@@ -536,6 +545,15 @@ def _empty_ssa_table() -> Table:
         names=_ssa_table_columns(),
         dtype=[int, int, int, int, int, int, int, bool, float, object],
     )
+
+
+def _parallel_results(n_jobs: int, tasks: Any) -> Any:
+    try:
+        return Parallel(n_jobs=n_jobs, prefer="threads", return_as="generator")(tasks)
+    except TypeError as exc:
+        if "return_as" not in str(exc):
+            raise
+        return Parallel(n_jobs=n_jobs, prefer="threads")(tasks)
 
 
 def _progress_iter(iterable: Any, *, total: int, enabled: bool, desc: str) -> Iterator[Any]:
