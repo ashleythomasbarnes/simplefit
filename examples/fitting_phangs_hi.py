@@ -24,6 +24,7 @@ OUTPUT_DIR = Path("/lustre/opsw/work/abarnes/phangs/HI_WORK/fitting/")
 HI_MARKER = "_meerkat_hi21cm"
 MASK_SUFFIX = "_broad_mom0"
 N_JOBS = 20
+CHUNK_SIZE = 128
 SSA_SIZE = None
 
 
@@ -154,8 +155,8 @@ def fit_one_galaxy(galaxy: str, cube_file: Path, mask_file: Path) -> None:
     cube, mask = load_cube_and_mask(cube_file, mask_file)
 
     ssa_size = SSA_SIZE if SSA_SIZE else None
-    print(f"  starting fit_cube(n_jobs={N_JOBS}, ssa_size={ssa_size})...")
-    cube_fit = fit_cube(cube, n_jobs=N_JOBS, progress=True, mask=mask, ssa_size=ssa_size)
+    print(f"  starting fit_cube(n_jobs={N_JOBS}, ssa_size={ssa_size}, chunk_size={CHUNK_SIZE})...")
+    cube_fit = fit_cube(cube, n_jobs=N_JOBS, progress=True, mask=mask, ssa_size=ssa_size, chunk_size=CHUNK_SIZE)
 
     print("  writing fit table...")
     cube_fit.write_table(output_table)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
@@ -74,6 +74,7 @@ def fit_cube(
     progress: bool = True,
     ssa_size: int | tuple[int, int] | None = None,
     ssa_min_pixels: int = 1,
+    chunk_size: int | None = None,
 ) -> FitCubeResult:
     """Fit every selected spatial pixel in a SpectralCube with ``fit_spectrum``.
 
@@ -107,6 +108,10 @@ def fit_cube(
         from those SSA components.
     ssa_min_pixels
         Minimum number of masked pixels required to keep an SSA box.
+    chunk_size
+        Optional number of spectra or SSAs submitted to one parallel worker
+        task. If omitted, a conservative size is chosen from ``n_jobs`` and
+        the number of selected pixels.
     """
 
     data = _cube_data_values(cube)
@@ -130,6 +135,7 @@ def fit_cube(
             max_components=max_components,
             fit_baseline=fit_baseline,
             progress=progress,
+            chunk_size=chunk_size,
         )
         ssa_labels = None
         ssa_table = None
@@ -143,6 +149,7 @@ def fit_cube(
             max_components=max_components,
             fit_baseline=fit_baseline,
             progress=progress,
+            chunk_size=chunk_size,
         )
         pixel_results = _fit_positions_from_ssas(
             data,
@@ -151,6 +158,7 @@ def fit_cube(
             n_jobs=n_jobs,
             fit_baseline=fit_baseline,
             progress=progress,
+            chunk_size=chunk_size,
         )
         ssa_labels = _ssa_label_map(data.shape[1:], ssa_results)
         ssa_table = _ssa_results_table(ssa_results)
@@ -238,6 +246,7 @@ def _fit_positions_independent(
     max_components: int | None,
     fit_baseline: bool,
     progress: bool,
+    chunk_size: int | None,
 ) -> list[dict[str, Any]]:
     if n_jobs == 1:
         result_iter = (
@@ -251,19 +260,57 @@ def _fit_positions_independent(
             )
             for y, x in positions
         )
-    else:
-        result_iter = _parallel_results(
-            n_jobs,
+        return list(_progress_iter(result_iter, total=len(positions), enabled=progress, desc="Fitting spectra", unit="pix"))
+
+    pixel_chunk_size = _parallel_chunk_size(len(positions), n_jobs=n_jobs, chunk_size=chunk_size)
+    chunk_iter = _parallel_chunk_results(
+        n_jobs,
+        (
             (
-                (
-                    _fit_one_pixel,
-                    (y, x, data[:, y, x], spectral_axis),
-                    {"max_components": max_components, "fit_baseline": fit_baseline},
-                )
-                for y, x in positions
+                _fit_pixel_chunk,
+                (chunk, spectral_axis),
+                {"max_components": max_components, "fit_baseline": fit_baseline},
             )
+            for chunk in _iter_pixel_chunks(data, positions, pixel_chunk_size)
+        ),
+    )
+    return list(_progress_chunk_iter(chunk_iter, total=len(positions), enabled=progress, desc="Fitting spectra", unit="pix"))
+
+
+def _iter_pixel_chunks(
+    data: np.ndarray,
+    positions: list[tuple[int, int]],
+    chunk_size: int,
+) -> Iterator[list[tuple[int, int, np.ndarray]]]:
+    chunk: list[tuple[int, int, np.ndarray]] = []
+    for y, x in positions:
+        spectrum = np.array(data[:, y, x], dtype=float, copy=True)
+        chunk.append((y, x, spectrum))
+        if len(chunk) >= chunk_size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
+def _fit_pixel_chunk(
+    chunk: list[tuple[int, int, np.ndarray]],
+    spectral_axis: np.ndarray,
+    *,
+    max_components: int | None,
+    fit_baseline: bool,
+) -> list[dict[str, Any]]:
+    return [
+        _fit_one_pixel(
+            y,
+            x,
+            spectrum,
+            spectral_axis,
+            max_components=max_components,
+            fit_baseline=fit_baseline,
         )
-    return list(_progress_iter(result_iter, total=len(positions), enabled=progress, desc="Fitting spectra"))
+        for y, x, spectrum in chunk
+    ]
 
 
 def _fit_positions_from_ssas(
@@ -274,6 +321,7 @@ def _fit_positions_from_ssas(
     n_jobs: int,
     fit_baseline: bool,
     progress: bool,
+    chunk_size: int | None,
 ) -> list[dict[str, Any]]:
     tasks = [
         (ssa_result, y, x)
@@ -306,20 +354,61 @@ def _fit_positions_from_ssas(
             )
             for ssa_result, y, x in tasks
         )
+        fitted = list(
+            _progress_iter(result_iter, total=len(tasks), enabled=progress, desc="Fitting SSA pixels", unit="pix")
+        )
     else:
-        result_iter = _parallel_results(
+        pixel_chunk_size = _parallel_chunk_size(len(tasks), n_jobs=n_jobs, chunk_size=chunk_size)
+        chunk_iter = _parallel_chunk_results(
             n_jobs,
             (
                 (
-                    _fit_one_pixel_from_ssa,
-                    (ssa_result, y, x, data[:, y, x], spectral_axis),
+                    _fit_ssa_pixel_chunk,
+                    (chunk, spectral_axis),
                     {"fit_baseline": fit_baseline},
                 )
-                for ssa_result, y, x in tasks
-            )
+                for chunk in _iter_ssa_pixel_chunks(data, tasks, pixel_chunk_size)
+            ),
         )
-    fitted = list(_progress_iter(result_iter, total=len(tasks), enabled=progress, desc="Fitting SSA pixels"))
+        fitted = list(
+            _progress_chunk_iter(chunk_iter, total=len(tasks), enabled=progress, desc="Fitting SSA pixels", unit="pix")
+        )
     return fitted + skipped
+
+
+def _iter_ssa_pixel_chunks(
+    data: np.ndarray,
+    tasks: list[tuple[dict[str, Any], int, int]],
+    chunk_size: int,
+) -> Iterator[list[tuple[dict[str, Any], int, int, np.ndarray]]]:
+    chunk: list[tuple[dict[str, Any], int, int, np.ndarray]] = []
+    for ssa_result, y, x in tasks:
+        spectrum = np.array(data[:, y, x], dtype=float, copy=True)
+        chunk.append((ssa_result, y, x, spectrum))
+        if len(chunk) >= chunk_size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
+def _fit_ssa_pixel_chunk(
+    chunk: list[tuple[dict[str, Any], int, int, np.ndarray]],
+    spectral_axis: np.ndarray,
+    *,
+    fit_baseline: bool,
+) -> list[dict[str, Any]]:
+    return [
+        _fit_one_pixel_from_ssa(
+            ssa_result,
+            y,
+            x,
+            spectrum,
+            spectral_axis,
+            fit_baseline=fit_baseline,
+        )
+        for ssa_result, y, x, spectrum in chunk
+    ]
 
 
 def _build_mask_aware_ssas(
@@ -386,6 +475,7 @@ def _fit_ssa_spectra(
     max_components: int | None,
     fit_baseline: bool,
     progress: bool,
+    chunk_size: int | None,
 ) -> list[dict[str, Any]]:
     if n_jobs == 1:
         result_iter = (
@@ -398,19 +488,21 @@ def _fit_ssa_spectra(
             )
             for ssa_def in ssa_defs
         )
-    else:
-        result_iter = _parallel_results(
-            n_jobs,
+        return list(_progress_iter(result_iter, total=len(ssa_defs), enabled=progress, desc="Fitting SSAs", unit="ssa"))
+
+    ssa_chunk_size = _parallel_chunk_size(len(ssa_defs), n_jobs=n_jobs, chunk_size=chunk_size)
+    chunk_iter = _parallel_chunk_results(
+        n_jobs,
+        (
             (
-                (
-                    _fit_one_ssa,
-                    (data, spectral_axis, ssa_def),
-                    {"max_components": max_components, "fit_baseline": fit_baseline},
-                )
-                for ssa_def in ssa_defs
+                _fit_ssa_chunk,
+                (chunk, spectral_axis),
+                {"max_components": max_components, "fit_baseline": fit_baseline},
             )
+            for chunk in _iter_ssa_chunks(data, ssa_defs, ssa_chunk_size)
         )
-    return list(_progress_iter(result_iter, total=len(ssa_defs), enabled=progress, desc="Fitting SSAs"))
+    )
+    return list(_progress_chunk_iter(chunk_iter, total=len(ssa_defs), enabled=progress, desc="Fitting SSAs", unit="ssa"))
 
 
 def _fit_one_ssa(
@@ -421,6 +513,51 @@ def _fit_one_ssa(
     max_components: int | None,
     fit_baseline: bool,
 ) -> dict[str, Any]:
+    mean_spectrum = _ssa_mean_spectrum(data, ssa_def)
+    return _fit_one_ssa_from_mean(
+        ssa_def,
+        mean_spectrum,
+        spectral_axis,
+        max_components=max_components,
+        fit_baseline=fit_baseline,
+    )
+
+
+def _iter_ssa_chunks(
+    data: np.ndarray,
+    ssa_defs: list[dict[str, Any]],
+    chunk_size: int,
+) -> Iterator[list[tuple[dict[str, Any], np.ndarray]]]:
+    chunk: list[tuple[dict[str, Any], np.ndarray]] = []
+    for ssa_def in ssa_defs:
+        chunk.append((ssa_def, _ssa_mean_spectrum(data, ssa_def)))
+        if len(chunk) >= chunk_size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
+def _fit_ssa_chunk(
+    chunk: list[tuple[dict[str, Any], np.ndarray]],
+    spectral_axis: np.ndarray,
+    *,
+    max_components: int | None,
+    fit_baseline: bool,
+) -> list[dict[str, Any]]:
+    return [
+        _fit_one_ssa_from_mean(
+            ssa_def,
+            mean_spectrum,
+            spectral_axis,
+            max_components=max_components,
+            fit_baseline=fit_baseline,
+        )
+        for ssa_def, mean_spectrum in chunk
+    ]
+
+
+def _ssa_mean_spectrum(data: np.ndarray, ssa_def: dict[str, Any]) -> np.ndarray:
     pixels = ssa_def["pixels"]
     spectra = np.stack([data[:, y, x] for y, x in pixels], axis=1)
     finite = np.isfinite(spectra)
@@ -428,6 +565,17 @@ def _fit_one_ssa(
     sums = np.where(finite, spectra, 0.0).sum(axis=1)
     mean_spectrum = np.full(spectra.shape[0], np.nan, dtype=float)
     np.divide(sums, counts, out=mean_spectrum, where=counts > 0)
+    return mean_spectrum
+
+
+def _fit_one_ssa_from_mean(
+    ssa_def: dict[str, Any],
+    mean_spectrum: np.ndarray,
+    spectral_axis: np.ndarray,
+    *,
+    max_components: int | None,
+    fit_baseline: bool,
+) -> dict[str, Any]:
     result = dict(ssa_def)
     result["mean_spectrum"] = mean_spectrum
     result["initial_guess"] = None
@@ -536,11 +684,23 @@ def _empty_ssa_table() -> Table:
     )
 
 
-def _parallel_results(
+def _parallel_chunk_size(total: int, *, n_jobs: int, chunk_size: int | None) -> int:
+    if total <= 0:
+        return 1
+    if chunk_size is not None:
+        chunk_size = int(chunk_size)
+        if chunk_size < 1:
+            raise ValueError("chunk_size must be >= 1.")
+        return chunk_size
+    chunks_per_worker = 8
+    return max(1, min(64, int(np.ceil(total / max(1, n_jobs * chunks_per_worker)))))
+
+
+def _parallel_chunk_results(
     n_jobs: int,
-    calls: Iterable[tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]],
-) -> Iterator[Any]:
-    with ThreadPoolExecutor(max_workers=n_jobs) as executor:
+    calls: Iterable[tuple[Callable[..., list[dict[str, Any]]], tuple[Any, ...], dict[str, Any]]],
+) -> Iterator[list[dict[str, Any]]]:
+    with ProcessPoolExecutor(max_workers=n_jobs) as executor:
         call_iter = iter(calls)
         pending = set()
 
@@ -563,7 +723,7 @@ def _parallel_results(
             submit_next()
 
 
-def _progress_iter(iterable: Any, *, total: int, enabled: bool, desc: str) -> Iterator[Any]:
+def _progress_iter(iterable: Any, *, total: int, enabled: bool, desc: str, unit: str) -> Iterator[Any]:
     if not enabled:
         yield from iterable
         return
@@ -571,13 +731,38 @@ def _progress_iter(iterable: Any, *, total: int, enabled: bool, desc: str) -> It
     try:
         from tqdm import tqdm
     except Exception:
-        yield from _stderr_progress_iter(iterable, total=total, desc=desc)
+        yield from _stderr_progress_iter(iterable, total=total, desc=desc, unit=unit)
         return
 
-    yield from tqdm(iterable, total=total, desc=desc, unit="pix")
+    yield from tqdm(iterable, total=total, desc=desc, unit=unit)
 
 
-def _stderr_progress_iter(iterable: Any, *, total: int, desc: str) -> Iterator[Any]:
+def _progress_chunk_iter(
+    chunk_iterable: Any,
+    *,
+    total: int,
+    enabled: bool,
+    desc: str,
+    unit: str,
+) -> Iterator[Any]:
+    if not enabled:
+        for chunk in chunk_iterable:
+            yield from chunk
+        return
+
+    try:
+        from tqdm import tqdm
+    except Exception:
+        yield from _stderr_progress_chunk_iter(chunk_iterable, total=total, desc=desc, unit=unit)
+        return
+
+    with tqdm(total=total, desc=desc, unit=unit) as bar:
+        for chunk in chunk_iterable:
+            yield from chunk
+            bar.update(len(chunk))
+
+
+def _stderr_progress_iter(iterable: Any, *, total: int, desc: str, unit: str) -> Iterator[Any]:
     if total <= 0:
         yield from iterable
         return
@@ -589,7 +774,7 @@ def _stderr_progress_iter(iterable: Any, *, total: int, desc: str) -> Iterator[A
         fraction = count / total
         filled = min(width, int(round(width * fraction)))
         bar = "#" * filled + "-" * (width - filled)
-        sys.stderr.write(f"\r{desc}: |{bar}| {count}/{total} pix")
+        sys.stderr.write(f"\r{desc}: |{bar}| {count}/{total} {unit}")
         sys.stderr.flush()
 
     write_progress(0)
@@ -597,6 +782,35 @@ def _stderr_progress_iter(iterable: Any, *, total: int, desc: str) -> Iterator[A
         yield item
         if count == total or count % update_every == 0:
             write_progress(count)
+    sys.stderr.write("\n")
+    sys.stderr.flush()
+
+
+def _stderr_progress_chunk_iter(chunk_iterable: Any, *, total: int, desc: str, unit: str) -> Iterator[Any]:
+    if total <= 0:
+        for chunk in chunk_iterable:
+            yield from chunk
+        return
+
+    width = 30
+    update_every = max(1, total // 100)
+    count = 0
+
+    def write_progress() -> None:
+        fraction = count / total
+        filled = min(width, int(round(width * fraction)))
+        bar = "#" * filled + "-" * (width - filled)
+        sys.stderr.write(f"\r{desc}: |{bar}| {count}/{total} {unit}")
+        sys.stderr.flush()
+
+    write_progress()
+    next_update = update_every
+    for chunk in chunk_iterable:
+        yield from chunk
+        count += len(chunk)
+        if count >= total or count >= next_update:
+            write_progress()
+            next_update = count + update_every
     sys.stderr.write("\n")
     sys.stderr.flush()
 
