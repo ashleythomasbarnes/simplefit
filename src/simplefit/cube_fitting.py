@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 import numpy as np
 from astropy.table import Table
 from astropy.wcs.utils import pixel_to_skycoord
-from joblib import Parallel, delayed
 
 from .spectrum_fitting import detect_initial_components, fit_spectrum, fit_spectrum_from_components
 
@@ -239,7 +239,6 @@ def _fit_positions_independent(
     fit_baseline: bool,
     progress: bool,
 ) -> list[dict[str, Any]]:
-    worker = delayed(_fit_one_pixel)
     if n_jobs == 1:
         result_iter = (
             _fit_one_pixel(
@@ -256,13 +255,10 @@ def _fit_positions_independent(
         result_iter = _parallel_results(
             n_jobs,
             (
-                worker(
-                    y,
-                    x,
-                    data[:, y, x],
-                    spectral_axis,
-                    max_components=max_components,
-                    fit_baseline=fit_baseline,
+                (
+                    _fit_one_pixel,
+                    (y, x, data[:, y, x], spectral_axis),
+                    {"max_components": max_components, "fit_baseline": fit_baseline},
                 )
                 for y, x in positions
             )
@@ -298,7 +294,6 @@ def _fit_positions_from_ssas(
         for y, x in ssa_result["pixels"]
     ]
 
-    worker = delayed(_fit_one_pixel_from_ssa)
     if n_jobs == 1:
         result_iter = (
             _fit_one_pixel_from_ssa(
@@ -315,13 +310,10 @@ def _fit_positions_from_ssas(
         result_iter = _parallel_results(
             n_jobs,
             (
-                worker(
-                    ssa_result,
-                    y,
-                    x,
-                    data[:, y, x],
-                    spectral_axis,
-                    fit_baseline=fit_baseline,
+                (
+                    _fit_one_pixel_from_ssa,
+                    (ssa_result, y, x, data[:, y, x], spectral_axis),
+                    {"fit_baseline": fit_baseline},
                 )
                 for ssa_result, y, x in tasks
             )
@@ -395,7 +387,6 @@ def _fit_ssa_spectra(
     fit_baseline: bool,
     progress: bool,
 ) -> list[dict[str, Any]]:
-    worker = delayed(_fit_one_ssa)
     if n_jobs == 1:
         result_iter = (
             _fit_one_ssa(
@@ -411,12 +402,10 @@ def _fit_ssa_spectra(
         result_iter = _parallel_results(
             n_jobs,
             (
-                worker(
-                    data,
-                    spectral_axis,
-                    ssa_def,
-                    max_components=max_components,
-                    fit_baseline=fit_baseline,
+                (
+                    _fit_one_ssa,
+                    (data, spectral_axis, ssa_def),
+                    {"max_components": max_components, "fit_baseline": fit_baseline},
                 )
                 for ssa_def in ssa_defs
             )
@@ -547,13 +536,31 @@ def _empty_ssa_table() -> Table:
     )
 
 
-def _parallel_results(n_jobs: int, tasks: Any) -> Any:
-    try:
-        return Parallel(n_jobs=n_jobs, prefer="threads", return_as="generator")(tasks)
-    except TypeError as exc:
-        if "return_as" not in str(exc):
-            raise
-        return Parallel(n_jobs=n_jobs, prefer="threads")(tasks)
+def _parallel_results(
+    n_jobs: int,
+    calls: Iterable[tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]],
+) -> Iterator[Any]:
+    with ThreadPoolExecutor(max_workers=n_jobs) as executor:
+        call_iter = iter(calls)
+        pending = set()
+
+        def submit_next() -> bool:
+            try:
+                func, args, kwargs = next(call_iter)
+            except StopIteration:
+                return False
+            pending.add(executor.submit(func, *args, **kwargs))
+            return True
+
+        for _ in range(max(1, n_jobs * 2)):
+            if not submit_next():
+                break
+
+        while pending:
+            future = next(as_completed(pending))
+            pending.remove(future)
+            yield future.result()
+            submit_next()
 
 
 def _progress_iter(iterable: Any, *, total: int, enabled: bool, desc: str) -> Iterator[Any]:
