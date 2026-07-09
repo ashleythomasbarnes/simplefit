@@ -150,11 +150,20 @@ def fit_one_galaxy(galaxy: str, cube_file: Path, mask_file: Path) -> None:
     print(f"  table: {display_path(output_table)}")
     print(f"  figure: {display_path(output_figure)}")
 
+    print("  loading cube and mask...")
     cube, mask = load_cube_and_mask(cube_file, mask_file)
+
     ssa_size = SSA_SIZE if SSA_SIZE else None
+    print(f"  starting fit_cube(n_jobs={N_JOBS}, ssa_size={ssa_size})...")
     cube_fit = fit_cube(cube, n_jobs=N_JOBS, progress=True, mask=mask, ssa_size=ssa_size)
+
+    print("  writing fit table...")
     cube_fit.write_table(output_table)
+
+    print("  generating component plot...")
     make_component_plot(cube_fit, output_figure)
+
+    print(f"Finished {galaxy}.")
 
 
 def main() -> None:
