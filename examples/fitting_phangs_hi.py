@@ -23,7 +23,7 @@ OUTPUT_DIR = Path("/lustre/opsw/work/abarnes/phangs/HI_WORK/fitting/")
 
 HI_MARKER = "_meerkat_hi21cm"
 MASK_SUFFIX = "_broad_mom0"
-N_JOBS = -1
+N_JOBS = 20
 SSA_SIZE = None
 
 
