@@ -18,7 +18,7 @@ from spectral_cube import SpectralCube
 from simplefit import fit_cube
 
 
-INPUT_DIR = Path("/lustre/opsw/work/abarnes/phangs/HI_WORK/Archive/HI/MeerKAT/v0p1/")
+INPUT_DIR = Path("/lustre/opsw/work/abarnes/phangs/HI_WORK/Archive/HI/MeerKAT/v0p1_copy/")
 OUTPUT_DIR = Path("/lustre/opsw/work/abarnes/phangs/HI_WORK/fitting/")
 
 HI_MARKER = "_meerkat_hi21cm"
