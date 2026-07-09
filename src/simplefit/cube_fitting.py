@@ -562,7 +562,7 @@ def _progress_iter(iterable: Any, *, total: int, enabled: bool, desc: str) -> It
         return
 
     try:
-        from tqdm.auto import tqdm
+        from tqdm import tqdm
     except Exception:
         yield from _stderr_progress_iter(iterable, total=total, desc=desc)
         return
