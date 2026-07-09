@@ -18,12 +18,15 @@ from spectral_cube import SpectralCube
 from simplefit import fit_cube
 
 
-INPUT_DIR = Path("/lustre/opsw/work/abarnes/phangs/HI_WORK/Archive/HI/MeerKAT/v0p1_copy/")
-OUTPUT_DIR = Path("/lustre/opsw/work/abarnes/phangs/HI_WORK/fitting/")
+# INPUT_DIR = Path("/lustre/opsw/work/abarnes/phangs/HI_WORK/Archive/HI/MeerKAT/v0p1_copy/")
+# OUTPUT_DIR = Path("/lustre/opsw/work/abarnes/phangs/HI_WORK/fitting/")
+
+INPUT_DIR = Path("/Users/abarnes/Dropbox/Data/Extragalactic/PHANGS_DRIVE/Archive/HI/MeerKAT/v0p1/")
+OUTPUT_DIR = Path("/Users/abarnes/Dropbox/Data/Extragalactic/misc/hi_fitting/")
 
 HI_MARKER = "_meerkat_hi21cm"
 MASK_SUFFIX = "_broad_mom0"
-N_JOBS = 20
+N_JOBS = 15
 CHUNK_SIZE = 256
 SSA_SIZE = None
 
