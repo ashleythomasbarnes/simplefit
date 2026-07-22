@@ -2,6 +2,7 @@
 
 from .cube_fitting import FitCubeResult, fit_cube
 from .spectrum_fitting import (
+    FitConfig,
     FitResult,
     GaussianComponent,
     SpectrumInitialGuess,
@@ -13,6 +14,7 @@ from .spectrum_fitting import (
 
 __all__ = [
     "FitCubeResult",
+    "FitConfig",
     "FitResult",
     "GaussianComponent",
     "SpectrumInitialGuess",

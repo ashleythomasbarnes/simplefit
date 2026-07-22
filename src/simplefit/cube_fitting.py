@@ -12,7 +12,7 @@ import numpy as np
 from astropy.table import Table
 from astropy.wcs.utils import pixel_to_skycoord
 
-from .spectrum_fitting import detect_initial_components, fit_spectrum, fit_spectrum_from_components
+from .spectrum_fitting import FitConfig, detect_initial_components, fit_spectrum, fit_spectrum_from_components
 
 
 @dataclass
@@ -75,6 +75,7 @@ def fit_cube(
     ssa_size: int | tuple[int, int] | None = None,
     ssa_min_pixels: int = 1,
     chunk_size: int | None = None,
+    config: FitConfig | None = None,
 ) -> FitCubeResult:
     """Fit every selected spatial pixel in a SpectralCube with ``fit_spectrum``.
 
@@ -112,8 +113,18 @@ def fit_cube(
         Optional number of spectra or SSAs submitted to one parallel worker
         task. If omitted, a conservative size is chosen from ``n_jobs`` and
         the number of selected pixels.
+    config
+        Optional :class:`~simplefit.spectrum_fitting.FitConfig` controlling
+        preprocessing, histogram noise estimation, baseline classification,
+        signal detection, component splitting, initial widths, final FWHM
+        bounds, and optimizer limits. The same immutable configuration is used
+        for independent spectra, SSA means, and SSA member fits in serial and
+        multiprocessing modes. Defaults are used when omitted.
     """
 
+    config = FitConfig() if config is None else config
+    if not isinstance(config, FitConfig):
+        raise TypeError("config must be a FitConfig instance or None.")
     data = _cube_data_values(cube)
     if data.ndim != 3:
         raise ValueError(f"Expected cube data with shape (spectral, y, x), got {data.shape}.")
@@ -136,6 +147,7 @@ def fit_cube(
             fit_baseline=fit_baseline,
             progress=progress,
             chunk_size=chunk_size,
+            config=config,
         )
         ssa_labels = None
         ssa_table = None
@@ -150,6 +162,7 @@ def fit_cube(
             fit_baseline=fit_baseline,
             progress=progress,
             chunk_size=chunk_size,
+            config=config,
         )
         pixel_results = _fit_positions_from_ssas(
             data,
@@ -159,6 +172,7 @@ def fit_cube(
             fit_baseline=fit_baseline,
             progress=progress,
             chunk_size=chunk_size,
+            config=config,
         )
         ssa_labels = _ssa_label_map(data.shape[1:], ssa_results)
         ssa_table = _ssa_results_table(ssa_results)
@@ -247,6 +261,7 @@ def _fit_positions_independent(
     fit_baseline: bool,
     progress: bool,
     chunk_size: int | None,
+    config: FitConfig,
 ) -> list[dict[str, Any]]:
     if n_jobs == 1:
         result_iter = (
@@ -257,6 +272,7 @@ def _fit_positions_independent(
                 spectral_axis,
                 max_components=max_components,
                 fit_baseline=fit_baseline,
+                config=config,
             )
             for y, x in positions
         )
@@ -269,7 +285,7 @@ def _fit_positions_independent(
             (
                 _fit_pixel_chunk,
                 (chunk, spectral_axis),
-                {"max_components": max_components, "fit_baseline": fit_baseline},
+                {"max_components": max_components, "fit_baseline": fit_baseline, "config": config},
             )
             for chunk in _iter_pixel_chunks(data, positions, pixel_chunk_size)
         ),
@@ -299,6 +315,7 @@ def _fit_pixel_chunk(
     *,
     max_components: int | None,
     fit_baseline: bool,
+    config: FitConfig,
 ) -> list[dict[str, Any]]:
     return [
         _fit_one_pixel(
@@ -308,6 +325,7 @@ def _fit_pixel_chunk(
             spectral_axis,
             max_components=max_components,
             fit_baseline=fit_baseline,
+            config=config,
         )
         for y, x, spectrum in chunk
     ]
@@ -322,6 +340,7 @@ def _fit_positions_from_ssas(
     fit_baseline: bool,
     progress: bool,
     chunk_size: int | None,
+    config: FitConfig,
 ) -> list[dict[str, Any]]:
     tasks = [
         (ssa_result, y, x)
@@ -351,6 +370,7 @@ def _fit_positions_from_ssas(
                 data[:, y, x],
                 spectral_axis,
                 fit_baseline=fit_baseline,
+                config=config,
             )
             for ssa_result, y, x in tasks
         )
@@ -365,7 +385,7 @@ def _fit_positions_from_ssas(
                 (
                     _fit_ssa_pixel_chunk,
                     (chunk, spectral_axis),
-                    {"fit_baseline": fit_baseline},
+                    {"fit_baseline": fit_baseline, "config": config},
                 )
                 for chunk in _iter_ssa_pixel_chunks(data, tasks, pixel_chunk_size)
             ),
@@ -397,6 +417,7 @@ def _fit_ssa_pixel_chunk(
     spectral_axis: np.ndarray,
     *,
     fit_baseline: bool,
+    config: FitConfig,
 ) -> list[dict[str, Any]]:
     return [
         _fit_one_pixel_from_ssa(
@@ -406,6 +427,7 @@ def _fit_ssa_pixel_chunk(
             spectrum,
             spectral_axis,
             fit_baseline=fit_baseline,
+            config=config,
         )
         for ssa_result, y, x, spectrum in chunk
     ]
@@ -476,6 +498,7 @@ def _fit_ssa_spectra(
     fit_baseline: bool,
     progress: bool,
     chunk_size: int | None,
+    config: FitConfig,
 ) -> list[dict[str, Any]]:
     if n_jobs == 1:
         result_iter = (
@@ -485,6 +508,7 @@ def _fit_ssa_spectra(
                 ssa_def,
                 max_components=max_components,
                 fit_baseline=fit_baseline,
+                config=config,
             )
             for ssa_def in ssa_defs
         )
@@ -497,7 +521,7 @@ def _fit_ssa_spectra(
             (
                 _fit_ssa_chunk,
                 (chunk, spectral_axis),
-                {"max_components": max_components, "fit_baseline": fit_baseline},
+                {"max_components": max_components, "fit_baseline": fit_baseline, "config": config},
             )
             for chunk in _iter_ssa_chunks(data, ssa_defs, ssa_chunk_size)
         )
@@ -512,6 +536,7 @@ def _fit_one_ssa(
     *,
     max_components: int | None,
     fit_baseline: bool,
+    config: FitConfig,
 ) -> dict[str, Any]:
     mean_spectrum = _ssa_mean_spectrum(data, ssa_def)
     return _fit_one_ssa_from_mean(
@@ -520,6 +545,7 @@ def _fit_one_ssa(
         spectral_axis,
         max_components=max_components,
         fit_baseline=fit_baseline,
+        config=config,
     )
 
 
@@ -544,6 +570,7 @@ def _fit_ssa_chunk(
     *,
     max_components: int | None,
     fit_baseline: bool,
+    config: FitConfig,
 ) -> list[dict[str, Any]]:
     return [
         _fit_one_ssa_from_mean(
@@ -552,6 +579,7 @@ def _fit_ssa_chunk(
             spectral_axis,
             max_components=max_components,
             fit_baseline=fit_baseline,
+            config=config,
         )
         for ssa_def, mean_spectrum in chunk
     ]
@@ -575,6 +603,7 @@ def _fit_one_ssa_from_mean(
     *,
     max_components: int | None,
     fit_baseline: bool,
+    config: FitConfig,
 ) -> dict[str, Any]:
     result = dict(ssa_def)
     result["mean_spectrum"] = mean_spectrum
@@ -592,6 +621,7 @@ def _fit_one_ssa_from_mean(
             spectral_axis,
             fit_baseline=fit_baseline,
             max_components=max_components,
+            config=config,
         )
         fit = fit_spectrum_from_components(
             mean_spectrum,
@@ -599,6 +629,7 @@ def _fit_one_ssa_from_mean(
             initial_guess.components,
             fit_baseline=fit_baseline,
             baseline_hint=initial_guess,
+            config=config,
         )
         result["initial_guess"] = initial_guess
         result["fit"] = fit
@@ -616,6 +647,7 @@ def _fit_one_pixel_from_ssa(
     spectral_axis: np.ndarray,
     *,
     fit_baseline: bool,
+    config: FitConfig,
 ) -> dict[str, Any]:
     if np.count_nonzero(np.isfinite(spectrum)) < 5:
         return {
@@ -635,6 +667,7 @@ def _fit_one_pixel_from_ssa(
             ssa_fit.components,
             fit_baseline=fit_baseline,
             baseline_hint=baseline_hint,
+            config=config,
         )
         return {"y": y, "x": x, "ssa_id": ssa_result["ssa_id"], "fit": fit, "error": ""}
     except Exception as exc:
@@ -847,6 +880,7 @@ def _fit_one_pixel(
     *,
     max_components: int | None,
     fit_baseline: bool,
+    config: FitConfig,
 ) -> dict[str, Any]:
     if np.count_nonzero(np.isfinite(spectrum)) < 5:
         return {"y": y, "x": x, "ssa_id": 0, "fit": None, "error": "Fewer than five finite spectral channels."}
@@ -857,6 +891,7 @@ def _fit_one_pixel(
             spectral_axis,
             fit_baseline=fit_baseline,
             max_components=max_components,
+            config=config,
         )
         return {"y": y, "x": x, "ssa_id": 0, "fit": fit, "error": ""}
     except Exception as exc:
